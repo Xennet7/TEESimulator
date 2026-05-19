@@ -3,7 +3,7 @@
 Authoring session date: 2026-05-19
 Branch: `feat/self-sufficient-spoofing`
 Source plan: `/home/rootdev/.claude/plans/fancy-humming-firefly.md`
-Status: 5 phase commits landed, full debug + full release pipeline clean, all device tests deferred, 5 CRITICAL + 10 MAJOR critic findings pending decision and fix.
+Status: 5 phase commits + 12 critic-fix commits landed, full debug pipeline clean, all device tests deferred, 0 CRITICAL + 2 MAJOR (M6 device-only, M8 plan-only) remaining. See "Critic fixes — 2026-05-19 continuation" below.
 
 ## Resume protocol for next session
 
@@ -30,7 +30,19 @@ This session ran as user `rootdev`. The rust toolchain, `~/.cargo` HDD symlink, 
 ## Branch state
 
 ```text
-<expected next commit> docs(plans): audit and rename handoff doc
+49b7bfc fix(util): skip day synthesis for YYYY-MM input
+9b982d4 fix(interception): emit KEY_SIZE for EC keys
+c589e12 feat(spoof): hot-reload PIF via FileObserver
+c111bd0 fix(spoof): skip empty PIF source files
+5a519b9 fix(spoof): guard atomicWrite errors in updateTo
+d14db7d fix(spoof): preserve [pkg] sections in atomicWrite
+47222ab fix(spoof): respect system=prop passive default
+b50d313 fix(spoof): order spoofers before keystore hook
+311523e fix(spoof): isolate BulletinPoller.start failure
+1ee2346 fix(spoof): wrap pollOnce in umbrella try/catch
+9d693bc fix(spoof): allow UDP egress for DNS resolution
+292f24a fix(spoof): bound future patch dates in updateTo
+e287e96 docs(plans): audit handoff and fill gaps
 9941dec docs(plans): wrap up session with full handoff
 2f64730 chore(scripts): make package.sh find user-local cargo
 14ec9c3 feat(spoof): periodic bulletin refresh via BulletinPoller
@@ -46,7 +58,7 @@ e0105d6 wip(keystore): add F1 Phase A diagnostic logs in updateAad path
 d4e2413 Merge pull request #21 from Andrea-lyz/fix/duck-detector-generate-fingerprint
 ```
 
-The two `docs(plans):` commits at the top are this handoff doc + the audit-pass refinements. `e0105d6` was pre-existing on the base branch; everything above it landed this session.
+The top 12 commits (292f24a through 49b7bfc) are the critic-fix continuation. `9b982d4` reverts the earlier `d34630f` (still in history per "never amend published commits"). `e287e96` + `9941dec` are the prior handoff docs. Everything below `e287e96` matches the original session table. `e0105d6` was pre-existing on the base branch.
 
 All authored by `Enginex0 <enginex0@users.noreply.github.com>`. No `Co-Authored-By` trailers anywhere. All commit messages conform to Conventional Commits (subject ≤50 chars where possible, body wraps at 72). Per project policy, branch lives local only — no `git push`, no PR.
 
@@ -406,6 +418,86 @@ These weren't in the 4-phase plan but the mobile-security critic flagged them fo
 4. **Detection-surface gaps:** out-of-scope for the original 4-phase plan, but the user may want a follow-up plan addressing the brand/model/AAID/cmdline gaps.
 5. **Active vs passive mode:** the C1 fix needs a design call. Options: (a) BulletinPoller respects `system=prop` and stays passive, (b) explicit opt-in flag for active mode, (c) drop BulletinPoller for users who want pure-passive.
 
+## Critic fixes — 2026-05-19 continuation
+
+The second pass on 2026-05-19 landed 12 commits resolving every CRITICAL and 8 of 10 MAJOR critic findings. M6 has a defensive recipe below; M8 is captured as a separate migration plan.
+
+### Design decisions confirmed
+
+| # | Question | Choice | Rationale |
+|---|---|---|---|
+| D11 | C1 poller behavior in passive mode | Respect `system=prop` (passive-safe) | Smallest blast radius; preserves Phase 1 default intent. The file becomes user-owned config; props track PIF or device default. |
+| D12 | M4 PIF resolution semantics | Keep `lastOrNull` (custom wins) | Hand-edited custom file overrides stock; matches the existing code and the most common user mental model. |
+| D13 | M9 EC KEY_SIZE | Revert d34630f | AOSP 15 KeyMint reference TA emits both `KEY_SIZE` and `EC_CURVE` for EC keys (research summary below). Omitting `KEY_SIZE` made the simulator's characteristics list shorter than real hardware — a detection fingerprint. |
+
+### M9 AOSP research summary
+
+Evidence path traced in `/mnt/companion/sources/aosp-android-15-6.6/`:
+
+- `system/keymint/ta/src/keys.rs:267-316` — `Operation::generate_key` → `generate_key_material` → `tag::extract_key_gen_characteristics`.
+- `system/keymint/common/src/tag.rs:270-377` — `extract_key_characteristics` filters input `KeyParam`s into the output list via `KEYMINT_ENFORCED_CHARACTERISTICS` membership check at lines 355-359.
+- `system/keymint/common/src/tag/info.rs:61-89` — `KEYMINT_ENFORCED_CHARACTERISTICS` set contains both `Tag::EcCurve` (line 64) and `Tag::KeySize` (line 72).
+- `system/keymint/common/src/tag.rs:623-649` — `check_ec_params` comment at line 632: "Key size is not needed, but if present should match the curve." The TA validates but never strips `KeySize`.
+- `hardware/interfaces/security/keymint/aidl/vts/functional/KeyMintBenchmark.cpp:234,259` — EC key generation supplies both `TAG_KEY_SIZE` and `TAG_EC_CURVE` simultaneously; the TA returns both unchanged.
+
+Conclusion: real KeyMint emits both. d34630f reverted in commit `9b982d4`.
+
+### Commits landed this pass
+
+| Commit | Type | What |
+|---|---|---|
+| 292f24a | fix(spoof) | Bound future patch dates to ~60 days (C2) |
+| 9d693bc | fix(spoof) | Allow UDP egress for DNS resolution (C3) |
+| 1ee2346 | fix(spoof) | Wrap pollOnce in umbrella try/catch (C4) |
+| 311523e | fix(spoof) | Isolate BulletinPoller.start failure (C5) |
+| b50d313 | fix(spoof) | Order spoofers before keystore hook (M2) |
+| 47222ab | fix(spoof) | Respect system=prop passive default (C1) |
+| d14db7d | fix(spoof) | Preserve [pkg] sections in atomicWrite (M5) |
+| 5a519b9 | fix(spoof) | Guard atomicWrite errors in updateTo (M3) |
+| c111bd0 | fix(spoof) | Skip empty PIF source files (M4) |
+| c589e12 | feat(spoof) | Hot-reload PIF via FileObserver (M10) |
+| 9b982d4 | fix(interception) | Re-emit KEY_SIZE for EC keys (M9) |
+| 49b7bfc | fix(util) | Skip day synthesis for YYYY-MM input (M1) |
+
+### M6 defensive recipe (sepolicy `node:*_socket node_bind`)
+
+The current `module/sepolicy.rule` (after `9d693bc`) uses `node:*_socket node_bind` for both ksu and magisk on TCP and UDP. The critic dispute was over whether this syntax compiles on every device's policy compiler. The Opus critic verified the form against AOSP `fastbootd.te` and partially withdrew the objection.
+
+Fallback recipe if device test #23 surfaces AVC denials referencing `node:tcp_socket node_bind` or `node:udp_socket node_bind` that fail to compile:
+
+```text
+allow keystore {adb_data_file shell_data_file} file *
+allow crash_dump keystore process *
+
+allow ksu self:tcp_socket { create connect read write getopt setopt }
+allow ksu port:tcp_socket name_connect
+allow magisk self:tcp_socket { create connect read write getopt setopt }
+allow magisk port:tcp_socket name_connect
+
+allow ksu self:udp_socket { create connect read write getopt setopt }
+allow ksu port:udp_socket name_connect
+allow magisk self:udp_socket { create connect read write getopt setopt }
+allow magisk port:udp_socket name_connect
+```
+
+This drops the four `node:*_socket node_bind` lines. `node_bind` is only required when an app `bind()`s to a local address before `connect()` — HttpsURLConnection client paths do not bind, so removing it should not break outbound traffic. Apply only if denials appear; otherwise leave the current rules in place.
+
+### M8 — Gradle init script modernization
+
+`settingsEvaluated` + `beforeProject` are deprecated since Gradle 7.6 and slated for removal in Gradle 10. The wrapper is currently pinned at 9.2.0 (`gradle/wrapper/gradle-wrapper.properties`), so no immediate break. Migration is captured in a separate plan at `.omc/plans/gradle-init-script-modernization-2026-05-19.md`.
+
+### Still deferred (not in this session's scope)
+
+- **M6** — sepolicy syntax verification on-device (see recipe above).
+- **M8** — Gradle init script migration (see plan above).
+- **All 5 device tests** (#11, #15, #19, #23, #24) — ADB device still absent.
+
+### Validation
+
+- `./gradlew :app:compileDebugKotlin` clean after every commit (sub-second incrementals).
+- Final smoke build via `./scripts/package.sh --debug`: `TEESimulator-RS-v6.0.0-190-Debug.zip` (12,379,724 bytes), 14 s incremental, clean.
+- No device tests possible — ADB still absent.
+
 ## File index — everything touched this session
 
 ### Created (4 files in repo + 3 system files)
@@ -473,9 +565,9 @@ The version number is `gitCommitCount` (175 = after my 4 phase commits; 176 = af
 
 ## Suggested first action next session
 
-1. Read this file end-to-end.
-2. Run `git log --oneline feat/self-sufficient-spoofing -14` to confirm the branch state matches the table above.
+1. Read this file end-to-end, with focus on "Critic fixes — 2026-05-19 continuation" for the most recent state.
+2. Run `git log --oneline feat/self-sufficient-spoofing -26` to confirm the branch state matches the table above.
 3. Run `git status --short` and cross-reference the "Untracked working-tree state" section so the noise doesn't trigger false-positive cleanup.
-4. Ask the user which critic finding to address first. Recommended priority: C1 (passive-default destruction) before any device test, because deferred Phase 1 test #11 will pass on the first deploy and silently regress on the next poll when BulletinPoller flips `system=prop` to explicit dates.
-5. If OMC `TaskList` returns the 5 device-test tasks, treat them as the success criteria after fixes land. If `TaskList` is empty (session ID changed), use the embedded "Deferred device-test step lists" section above.
-6. Before any device deploy, verify the device's `ro.vendor.build.security_patch` returns full YYYY-MM-DD format (not YYYY-MM). If it's YYYY-MM, fix critic finding M1 first.
+4. With all CRITICAL + 8 of 10 MAJOR critic findings resolved, the next logical step is the deferred device-test set (#11, #15, #19, #23, #24). Connect an ADB device and run `./scripts/package.sh --release --deploy --clear-keys --reboot --verify`, then walk each per-phase checklist in "Deferred device-test step lists" above.
+5. If `TaskList` returns empty for the device tasks (session ID changed), the step lists are embedded in this file under "Deferred device-test step lists."
+6. M6 (sepolicy `node:tcp_socket` syntax) must be confirmed during task #23 via `sesearch -A` or AVC denial logs. If denials surface, the UDP block landed in `9d693bc` plus the existing TCP block should be reviewed against the device's policy compiler version.
