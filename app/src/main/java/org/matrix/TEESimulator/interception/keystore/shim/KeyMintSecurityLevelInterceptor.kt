@@ -211,42 +211,50 @@ class KeyMintSecurityLevelInterceptor(
             val metadata: KeyMetadata =
                 reply.readTypedObject(KeyMetadata.CREATOR)
                     ?: return TransactionResult.SkipTransaction
-            val originalChain =
-                CertificateHelper.getCertificateChain(metadata)
-                    ?: return TransactionResult.SkipTransaction
-            if (originalChain.size > 1) {
-                // Read the request parcel to extract keyDescriptor and cert date params.
-                data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
-                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
-                    ?: return TransactionResult.SkipTransaction
-                data.readTypedObject(KeyDescriptor.CREATOR) // skip attestationKey
-                val keyParams = data.createTypedArray(KeyParameter.CREATOR)
-                val certNotBefore = keyParams?.find { it.tag == Tag.CERTIFICATE_NOT_BEFORE }?.value?.dateTime?.let { Date(it) }
-                val certNotAfter = keyParams?.find { it.tag == Tag.CERTIFICATE_NOT_AFTER }?.value?.dateTime?.let { Date(it) }
 
-                val newChain = AttestationPatcher.patchCertificateChain(originalChain, callingUid, certNotBefore, certNotAfter)
+            data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
+            val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
+                ?: return TransactionResult.SkipTransaction
+            val keyId = KeyIdentifier(callingUid, keyDescriptor.alias)
 
-                // Cache the newly patched chain to ensure consistency across subsequent API calls.
-                val key = metadata.key
-                    ?: return TransactionResult.SkipTransaction
-                val keyId = KeyIdentifier(callingUid, keyDescriptor.alias)
-                CertificateHelper.updateCertificateChain(metadata, newChain).getOrThrow()
-                metadata.authorizations =
-                    InterceptorUtils.patchAuthorizations(metadata.authorizations, callingUid)
-
-                // We must clean up cached generated keys before storing the patched chain
+            val originalChain = CertificateHelper.getCertificateChain(metadata)
+            if (originalChain == null || originalChain.size <= 1) {
+                // Cache non-attested responses for KEY_ID getKeyEntry parity.
+                // Without this, the cached attested path returns in ~1ms while
+                // the forwarded non-attested path takes ~1.5ms, and
+                // TimingSideChannelProbe flags the 1.55x ratio.
                 cleanupKeyData(keyId)
-                patchedChains[keyId] = newChain
                 teeResponses[keyId] = KeyEntryResponse().apply {
                     this.metadata = metadata
                     iSecurityLevel = original
                 }
-                SystemLogger.debug(
-                    "Cached patched certificate chain for $keyId. (${key.alias} [${key.domain}, ${key.nspace}])"
-                )
-
-                return InterceptorUtils.createTypedObjectReply(metadata)
+                return TransactionResult.SkipTransaction
             }
+
+            data.readTypedObject(KeyDescriptor.CREATOR) // skip attestationKey
+            val keyParams = data.createTypedArray(KeyParameter.CREATOR)
+            val certNotBefore = keyParams?.find { it.tag == Tag.CERTIFICATE_NOT_BEFORE }?.value?.dateTime?.let { Date(it) }
+            val certNotAfter = keyParams?.find { it.tag == Tag.CERTIFICATE_NOT_AFTER }?.value?.dateTime?.let { Date(it) }
+
+            val newChain = AttestationPatcher.patchCertificateChain(originalChain, callingUid, certNotBefore, certNotAfter)
+
+            val key = metadata.key
+                ?: return TransactionResult.SkipTransaction
+            CertificateHelper.updateCertificateChain(metadata, newChain).getOrThrow()
+            metadata.authorizations =
+                InterceptorUtils.patchAuthorizations(metadata.authorizations, callingUid)
+
+            cleanupKeyData(keyId)
+            patchedChains[keyId] = newChain
+            teeResponses[keyId] = KeyEntryResponse().apply {
+                this.metadata = metadata
+                iSecurityLevel = original
+            }
+            SystemLogger.debug(
+                "Cached patched certificate chain for $keyId. (${key.alias} [${key.domain}, ${key.nspace}])"
+            )
+
+            return InterceptorUtils.createTypedObjectReply(metadata)
         }
         return TransactionResult.SkipTransaction
     }
@@ -511,7 +519,7 @@ class KeyMintSecurityLevelInterceptor(
                     parsedParams.attestationChallenge != null -> TransactionResult.Continue
                     else -> {
                         cleanupKeyData(keyId)
-                        TransactionResult.ContinueAndSkipPost
+                        TransactionResult.Continue
                     }
                 }
             }
